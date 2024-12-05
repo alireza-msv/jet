@@ -1,7 +1,17 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+
+	"github.com/alireza-msv/jet/internal/config"
+)
 
 func main() {
-	fmt.Println("EHRE")
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println(cfg)
 }
