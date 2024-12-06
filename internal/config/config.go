@@ -3,9 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
-)
 
-const defaultSchedule = "0 0 * * *"
+	"github.com/alireza-msv/jet/internal/utils"
+)
 
 type Config struct {
 	AccountID    string
@@ -38,7 +38,7 @@ func LoadConfig() (*Config, error) {
 
 	schedule, err := readEnvVariable("SCHEDULE", false)
 	if schedule != "" {
-		schedule = defaultSchedule
+		schedule = utils.DefaultSchedule
 	}
 
 	return &Config{
