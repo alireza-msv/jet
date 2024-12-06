@@ -1,50 +1,114 @@
 package auth
 
 import (
-	"fmt"
-	"io/ioutil"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
-	"os"
+	"time"
+
+	httpclient "github.com/alireza-msv/jet/internal/http_client"
+	"github.com/alireza-msv/jet/internal/utils"
 )
 
-type AuthRequest struct {
-	GrantType    string `json:"grant_type"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-	Scope        string `json:"scope"`
-	AccountID    string `json:"account_id"`
+type ClientOptions struct {
+	AccountID    string
+	ClientID     string
+	ClientSecret string
+	Scope        string
 }
 
-type AuthResponse struct {
-	AccessToken     string `json:"access_token"`
-	ExpiresIn       int    `json:"expires_in"`
-	TokenType       string `json:"token_type"`
-	RESTInstanceURL string `json:"rest_instance_url"`
-	SOATInstanceURL string `json:"soap_instance_url"`
-	Scope           string `json:"scope"`
+type AuthClient struct {
+	ClientOptions
+	accessToken     string
+	tokenType       string
+	restInstanceURI string
+	tokenExpiresIn  *time.Time
+	httpClient      *httpclient.HttpClient
 }
 
-func DoAuth(subDomain string, authRequest *AuthRequest) (*AuthResponse, error) {
-	requestURL := fmt.Sprintf("https://%s.auth.marketingcloudapis.com", subDomain)
-	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
-	if err != nil {
-		return nil, err
+func NewAuthClient(subdomain string, options ClientOptions) *AuthClient {
+	c := AuthClient{
+		ClientOptions: options,
+		httpClient:    httpclient.NewHttpClient(subdomain),
 	}
 
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Printf("client: error making http request: %s\n", err)
-		os.Exit(1)
+	if c.Scope == "" {
+		c.Scope = utils.AuthDefaultScope
 	}
 
-	fmt.Printf("client: got response!\n")
-	fmt.Printf("client: status code: %d\n", res.StatusCode)
+	return &c
+}
 
-	resBody, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		fmt.Printf("client: could not read response body: %s\n", err)
-		os.Exit(1)
+// Returns the current Access Token
+// If the Access Token is expired, receives a new access token
+// The new access token will be saved in the accessToken field
+// and the tokenExpiresIn fileld will be updated
+// The method returns empty string and error if something goes wrong
+func (client *AuthClient) Token() (string, error) {
+	// Returning the current token if it's not expired
+	if client.tokenExpiresIn != nil && client.tokenExpiresIn.After(time.Now()) {
+		return client.accessToken, nil
 	}
-	fmt.Printf("client: response body: %s\n", resBody)
 
+	err := client.getToken()
+	if err != nil {
+		return "", err
+	}
+
+	return client.accessToken, nil
+}
+
+func (client *AuthClient) getToken() error {
+	body, err := (&AuthRequest{
+		GrantType:    "client_credentials",
+		AccountID:    client.AccountID,
+		ClientID:     client.ClientID,
+		ClientSecret: client.ClientSecret,
+		Scope:        client.Scope,
+	}).ToJSONReader()
+	if err != nil {
+		return err
+	}
+
+	res, err := client.httpClient.PostJSON("v2/token", body)
+
+	if err != nil {
+		return err
+	}
+
+	resBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		return err
+	}
+
+	if res.StatusCode == http.StatusUnauthorized {
+		errorResponse := AuthErrorResponse{}
+		err = json.Unmarshal(resBody, &errorResponse)
+		if err != nil {
+			return err
+		}
+
+		return errors.New(errorResponse.ErrorDescription)
+	} else if res.StatusCode != http.StatusOK {
+		return errors.New(string(resBody))
+	}
+
+	authResponse := AuthResponse{}
+	err = json.Unmarshal(resBody, &authResponse)
+	if err != nil {
+		return err
+	}
+
+	client.accessToken = authResponse.AccessToken
+	client.restInstanceURI = authResponse.RESTInstanceURL
+	client.tokenType = authResponse.TokenType
+	expireTime := time.Now().Add(time.Duration(authResponse.ExpiresIn) * time.Second)
+	client.tokenExpiresIn = &expireTime
+
+	return nil
+}
+
+func (client *AuthClient) RESTURI() string {
+	return client.restInstanceURI
 }
