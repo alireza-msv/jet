@@ -5,10 +5,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/alireza-msv/jet/internal/auth"
+	"github.com/alireza-msv/jet/internal/app"
 	"github.com/alireza-msv/jet/internal/config"
-	"github.com/alireza-msv/jet/internal/salesforce"
 	"github.com/alireza-msv/jet/internal/storage"
+	"github.com/go-co-op/gocron/v2"
 )
 
 func main() {
@@ -17,73 +17,30 @@ func main() {
 		log.Fatal(err)
 	}
 
-	authClient := auth.NewAuthClient(cfg.Subdomain, auth.ClientOptions{
-		AccountID:    cfg.AccountID,
-		ClientID:     cfg.ClientID,
-		ClientSecret: cfg.ClientSecret,
-	})
-
-	client := salesforce.NewClient(authClient)
+	s, err := gocron.NewScheduler()
+	if err != nil {
+		log.Fatal("Error on creating Scheduler", err)
+	}
 
 	strg := NewStorage()
+	a := app.NewApp(cfg, strg)
 
-	cursor, err := strg.GetAssetsCursor()
+	j, err := s.NewJob(
+		gocron.CronJob(cfg.Schedule, false),
+		gocron.NewTask(func(ap *app.App) {
+			ap.Start()
+		}, a),
+	)
 	if err != nil {
-		log.Fatal("Failed to get the cursor")
+		log.Fatal("Error on creating a new Jon", err)
 	}
 
-	page := 1
-	pageSize := 50
-	assetsRequest := salesforce.AssetsRequest{
-		Page: salesforce.PageObject{Page: page, PageSize: pageSize},
-		Query: salesforce.QueryObject{
-			LeftOperand: salesforce.QueryOperand{
-				Property:       "createdDate",
-				SimpleOperator: salesforce.OperandGreaterThan,
-				Value:          cursor,
-			},
-			LogicalOperator: salesforce.LogicalOperandOr,
-			RightOperand: salesforce.QueryOperand{
-				Property:       "modifedDate",
-				SimpleOperator: salesforce.OperandGreaterThan,
-				Value:          cursor,
-			},
-		},
-		Sort: []salesforce.SortObject{
-			{
-				Property:  "createdDate",
-				Direction: salesforce.SortDirectionAscending,
-			},
-			{
-				Property:  "modifiedDate",
-				Direction: salesforce.SortDirectionAscending,
-			},
-		},
-	}
+	fmt.Printf("Job with ID %s created", j.ID())
 
-	for {
-		assets, err := client.QueryAssets(assetsRequest)
-		if err != nil {
-			// TODO: implement a better error handling
-			fmt.Print("Error on getting assets::", err)
-			break
-		}
+	s.Start()
 
-		fmt.Printf("%d Asset found \n", assets.Count)
-
-		if len(assets.Items) == 0 {
-			// No more assets left
-			break
-		} else {
-			strg.SaveAssets(&assets.Items)
-
-			assetsRequest.Page.Page += 1
-		}
-	}
-
-	err = strg.SaveAssetsCursor(time.Now().UTC().String())
-	if err != nil {
-		fmt.Println("Error on saving the cursor::", err)
+	select {
+	case <-time.After(time.Minute):
 	}
 }
 
